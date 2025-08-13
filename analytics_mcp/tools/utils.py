@@ -20,6 +20,8 @@ from google.analytics import admin_v1beta, data_v1beta
 from google.api_core.gapic_v1.client_info import ClientInfo
 from importlib import metadata
 import google.auth
+from google.oauth2 import credentials as oauth2_credentials
+import os
 import proto
 
 
@@ -46,9 +48,19 @@ _READ_ONLY_ANALYTICS_SCOPE = (
 
 
 def _create_credentials() -> google.auth.credentials.Credentials:
-    """Returns Application Default Credentials with read-only scope."""
-    (credentials, _) = google.auth.default(scopes=[_READ_ONLY_ANALYTICS_SCOPE])
-    return credentials
+    """Returns credentials with read-only scope.
+
+    If the ANALYTICS_MCP_ACCESS_TOKEN environment variable is set, it will be
+    used to create the credentials. Otherwise, Application Default Credentials
+    will be used.
+    """
+    access_token = os.environ.get("ANALYTICS_MCP_ACCESS_TOKEN")
+    if access_token:
+        return oauth2_credentials.Credentials(
+            token=access_token, scopes=[_READ_ONLY_ANALYTICS_SCOPE]
+        )
+    (creds, _) = google.auth.default(scopes=[_READ_ONLY_ANALYTICS_SCOPE])
+    return creds
 
 
 def create_admin_api_client() -> admin_v1beta.AnalyticsAdminServiceAsyncClient:
