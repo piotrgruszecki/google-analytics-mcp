@@ -1,102 +1,87 @@
-import OAuthProvider from "@cloudflare/workers-oauth-provider";
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { McpAgent } from "agents/mcp";
-import { Octokit } from "octokit";
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { GitHubHandler } from "./github-handler";
+import { BetaAnalyticsDataClient } from "@google-analytics/data";
 
-// Context from the auth process, encrypted & stored in the auth token
-// and provided to the DurableMCP as this.props
-type Props = {
-	login: string;
-	name: string;
-	email: string;
-	accessToken: string;
-};
-
-const ALLOWED_USERNAMES = new Set<string>([
-	// Add GitHub usernames of users who should have access to the image generation tool
-	// For example: 'yourusername', 'coworkerusername'
-]);
-
-export class MyMCP extends McpAgent<Env, Record<string, never>, Props> {
+// Define our MCP agent with GA4 tools
+export class MyMCP extends McpAgent {
 	server = new McpServer({
-		name: "Github OAuth Proxy Demo",
+		name: "Google Analytics MCP Server",
 		version: "1.0.0",
 	});
 
 	async init() {
-		// Hello, world!
+		// Get GA4 properties
 		this.server.tool(
-			"add",
-			"Add two numbers the way only MCP can",
-			{ a: z.number(), b: z.number() },
-			async ({ a, b }) => ({
-				content: [{ text: String(a + b), type: "text" }],
-			}),
-		);
-
-		// Use the upstream access token to facilitate tools
-		this.server.tool(
-			"userInfoOctokit",
-			"Get user info from GitHub, via Octokit",
+			"get_ga4_properties",
 			{},
 			async () => {
-				const octokit = new Octokit({ auth: this.props!.accessToken });
+				const credentials = JSON.parse(this.env.GOOGLE_APPLICATION_CREDENTIALS);
+				
+				// Note: Property listing requires Admin API, not Data API
+				// For now, we'll return instructions
 				return {
-					content: [
-						{
-							text: JSON.stringify(await octokit.rest.users.getAuthenticated()),
-							type: "text",
-						},
-					],
+					content: [{
+						type: "text",
+						text: "To use GA4, you need to provide your property ID. Find it in GA4 > Admin > Property Settings"
+					}],
 				};
-			},
+			}
 		);
 
-		// Dynamically add tools based on the user's login. In this case, I want to limit
-		// access to my Image Generation tool to just me
-		if (ALLOWED_USERNAMES.has(this.props!.login)) {
-			this.server.tool(
-				"generateImage",
-				"Generate an image using the `flux-1-schnell` model. Works best with 8 steps.",
-				{
-					prompt: z
-						.string()
-						.describe("A text description of the image you want to generate."),
-					steps: z
-						.number()
-						.min(4)
-						.max(8)
-						.default(4)
-						.describe(
-							"The number of diffusion steps; higher values can improve quality but take longer. Must be between 4 and 8, inclusive.",
-						),
-				},
-				async ({ prompt, steps }) => {
-					const response = await this.env.AI.run("@cf/black-forest-labs/flux-1-schnell", {
-						prompt,
-						steps,
+		// Run a GA4 report
+		this.server.tool(
+			"run_ga4_report",
+			{
+				property_id: z.string(),
+				start_date: z.string(),
+				end_date: z.string(),
+				metrics: z.array(z.string()),
+				dimensions: z.array(z.string()).optional(),
+			},
+			async ({ property_id, start_date, end_date, metrics, dimensions }) => {
+				try {
+					const credentials = JSON.parse(this.env.GOOGLE_APPLICATION_CREDENTIALS);
+					
+					const analyticsDataClient = new BetaAnalyticsDataClient({
+						credentials: credentials,
+					});
+
+					const [response] = await analyticsDataClient.runReport({
+						property: `properties/${property_id}`,
+						dateRanges: [{ startDate: start_date, endDate: end_date }],
+						metrics: metrics.map(name => ({ name })),
+						dimensions: dimensions?.map(name => ({ name })) || [],
 					});
 
 					return {
-						content: [{ data: response.image!, mimeType: "image/jpeg", type: "image" }],
+						content: [{
+							type: "text",
+							text: JSON.stringify(response, null, 2)
+						}],
 					};
-				},
-			);
-		}
+				} catch (error) {
+					return {
+						content: [{
+							type: "text",
+							text: `Error: ${error.message}`
+						}],
+					};
+				}
+			}
+		);
 	}
 }
 
-export default new OAuthProvider({
-	// NOTE - during the summer 2025, the SSE protocol was deprecated and replaced by the Streamable-HTTP protocol
-	// https://developers.cloudflare.com/agents/model-context-protocol/transport/#mcp-server-with-authentication
-	apiHandlers: {
-		"/sse": MyMCP.serveSSE("/sse"), // deprecated SSE protocol - use /mcp instead
-		"/mcp": MyMCP.serve("/mcp"), // Streamable-HTTP protocol
+export default {
+	fetch(request: Request, env: Env, ctx: ExecutionContext) {
+		const url = new URL(request.url);
+		if (url.pathname === "/sse" || url.pathname === "/sse/message") {
+			return MyMCP.serveSSE("/sse").fetch(request, env, ctx);
+		}
+		if (url.pathname === "/mcp") {
+			return MyMCP.serve("/mcp").fetch(request, env, ctx);
+		}
+		return new Response("Not found", { status: 404 });
 	},
-	authorizeEndpoint: "/authorize",
-	clientRegistrationEndpoint: "/register",
-	defaultHandler: GitHubHandler as any,
-	tokenEndpoint: "/token",
-});
+};
