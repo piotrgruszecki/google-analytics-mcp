@@ -91,7 +91,7 @@ export class MyMCP extends McpAgent {
 			body: `grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer&assertion=${jwt}`,
 		});
 
-		const tokenData = await tokenResponse.json();
+		const tokenData: any = await tokenResponse.json();
 
 		if (!tokenResponse.ok) {
 			throw new Error(`Token error: ${JSON.stringify(tokenData)}`);
@@ -100,8 +100,16 @@ export class MyMCP extends McpAgent {
 		return tokenData.access_token;
 	}
 
+	private getServiceAccountCredentials(): any {
+		const raw = (this.env as any).GOOGLE_APPLICATION_CREDENTIALS;
+		if (typeof raw !== "string") {
+			throw new Error("GOOGLE_APPLICATION_CREDENTIALS must be a JSON string");
+		}
+		return JSON.parse(raw);
+	}
+
 	async init() {
-		// Run a GA4 report
+		// Run a GA4 report (equivalent to Python run_report)
 		this.server.tool(
 			"run_ga4_report",
 			{
@@ -113,7 +121,7 @@ export class MyMCP extends McpAgent {
 			},
 			async ({ property_id, start_date, end_date, metrics, dimensions }) => {
 				try {
-					const credentials = JSON.parse(this.env.GOOGLE_APPLICATION_CREDENTIALS);
+					const credentials = this.getServiceAccountCredentials();
 					const accessToken = await this.getAccessToken(credentials);
 
 					const requestBody = {
@@ -134,7 +142,7 @@ export class MyMCP extends McpAgent {
 						}
 					);
 
-					const data = await response.json();
+					const data: any = await response.json();
 
 					if (!response.ok) {
 						return {
@@ -152,12 +160,224 @@ export class MyMCP extends McpAgent {
 						}],
 					};
 				} catch (error) {
+					const message = error instanceof Error ? error.message : String(error);
 					return {
 						content: [{
 							type: "text",
-							text: `Error: ${error.message}`
+							text: `Error: ${message}`
 						}],
 					};
+				}
+			}
+		);
+
+		// Run a GA4 report (alias matching Python naming)
+		this.server.tool(
+			"run_report",
+			{
+				property_id: z.string(),
+				start_date: z.string(),
+				end_date: z.string(),
+				metrics: z.array(z.string()),
+				dimensions: z.array(z.string()).optional(),
+			},
+			async ({ property_id, start_date, end_date, metrics, dimensions }) => {
+				try {
+					const credentials = this.getServiceAccountCredentials();
+					const accessToken = await this.getAccessToken(credentials);
+
+					const requestBody = {
+						dateRanges: [{ startDate: start_date, endDate: end_date }],
+						metrics: metrics.map(name => ({ name })),
+						dimensions: dimensions?.map(name => ({ name })) || [],
+					};
+
+					const response = await fetch(
+						`https://analyticsdata.googleapis.com/v1beta/properties/${property_id}:runReport`,
+						{
+							method: "POST",
+							headers: {
+								Authorization: `Bearer ${accessToken}`,
+								"Content-Type": "application/json",
+							},
+							body: JSON.stringify(requestBody),
+						}
+					);
+
+					const data: any = await response.json();
+
+					if (!response.ok) {
+						return {
+							content: [{
+								type: "text",
+								text: `Error: ${JSON.stringify(data, null, 2)}`
+							}],
+						};
+					}
+
+					return {
+						content: [{
+							type: "text",
+							text: JSON.stringify(data, null, 2)
+						}],
+					};
+				} catch (error) {
+					const message = error instanceof Error ? error.message : String(error);
+					return {
+						content: [{
+							type: "text",
+							text: `Error: ${message}`
+						}],
+					};
+				}
+			}
+		);
+
+		// Run a GA4 realtime report (equivalent to Python run_realtime_report)
+		this.server.tool(
+			"run_realtime_report",
+			{
+				property_id: z.string(),
+				metrics: z.array(z.string()),
+				dimensions: z.array(z.string()).optional(),
+				minute_ranges: z.array(z.object({ start_minutes_ago: z.number(), end_minutes_ago: z.number().optional() })).optional(),
+			},
+			async ({ property_id, metrics, dimensions, minute_ranges }) => {
+				try {
+					const credentials = this.getServiceAccountCredentials();
+					const accessToken = await this.getAccessToken(credentials);
+
+					const requestBody: any = {
+						metrics: metrics.map(name => ({ name })),
+						dimensions: dimensions?.map(name => ({ name })) || [],
+					};
+					if (minute_ranges && minute_ranges.length > 0) {
+						requestBody.minuteRanges = minute_ranges.map(mr => ({
+							startMinutesAgo: mr.start_minutes_ago,
+							...(mr.end_minutes_ago !== undefined ? { endMinutesAgo: mr.end_minutes_ago } : {}),
+						}));
+					}
+
+					const response = await fetch(
+						`https://analyticsdata.googleapis.com/v1beta/properties/${property_id}:runRealtimeReport`,
+						{
+							method: "POST",
+							headers: {
+								Authorization: `Bearer ${accessToken}`,
+								"Content-Type": "application/json",
+							},
+							body: JSON.stringify(requestBody),
+						}
+					);
+
+					const data: any = await response.json();
+					if (!response.ok) {
+						return { content: [{ type: "text", text: `Error: ${JSON.stringify(data, null, 2)}` }] };
+					}
+					return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
+				} catch (error) {
+					const message = error instanceof Error ? error.message : String(error);
+					return { content: [{ type: "text", text: `Error: ${message}` }] };
+				}
+			}
+		);
+
+		// Admin API: get_account_summaries
+		this.server.tool(
+			"get_account_summaries",
+			{
+				page_size: z.number().optional(),
+				page_token: z.string().optional(),
+			},
+			async ({ page_size, page_token }) => {
+				try {
+					const credentials = this.getServiceAccountCredentials();
+					const accessToken = await this.getAccessToken(credentials);
+					const url = new URL("https://analyticsadmin.googleapis.com/v1beta/accountSummaries");
+					if (page_size) url.searchParams.set("pageSize", String(page_size));
+					if (page_token) url.searchParams.set("pageToken", page_token);
+					const response = await fetch(url.href, { headers: { Authorization: `Bearer ${accessToken}` } });
+					const data: any = await response.json();
+					if (!response.ok) {
+						return { content: [{ type: "text", text: `Error: ${JSON.stringify(data, null, 2)}` }] };
+					}
+					return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
+				} catch (error) {
+					const message = error instanceof Error ? error.message : String(error);
+					return { content: [{ type: "text", text: `Error: ${message}` }] };
+				}
+			}
+		);
+
+		// Admin API: get_property_details
+		this.server.tool(
+			"get_property_details",
+			{ property_id: z.string() },
+			async ({ property_id }) => {
+				try {
+					const credentials = this.getServiceAccountCredentials();
+					const accessToken = await this.getAccessToken(credentials);
+					const url = `https://analyticsadmin.googleapis.com/v1beta/properties/${property_id}`;
+					const response = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}` } });
+					const data: any = await response.json();
+					if (!response.ok) {
+						return { content: [{ type: "text", text: `Error: ${JSON.stringify(data, null, 2)}` }] };
+					}
+					return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
+				} catch (error) {
+					const message = error instanceof Error ? error.message : String(error);
+					return { content: [{ type: "text", text: `Error: ${message}` }] };
+				}
+			}
+		);
+
+		// Admin API: list_google_ads_links
+		this.server.tool(
+			"list_google_ads_links",
+			{ property_id: z.string(), page_size: z.number().optional(), page_token: z.string().optional() },
+			async ({ property_id, page_size, page_token }) => {
+				try {
+					const credentials = this.getServiceAccountCredentials();
+					const accessToken = await this.getAccessToken(credentials);
+					const url = new URL(`https://analyticsadmin.googleapis.com/v1beta/properties/${property_id}/googleAdsLinks`);
+					if (page_size) url.searchParams.set("pageSize", String(page_size));
+					if (page_token) url.searchParams.set("pageToken", page_token);
+					const response = await fetch(url.href, { headers: { Authorization: `Bearer ${accessToken}` } });
+					const data: any = await response.json();
+					if (!response.ok) {
+						return { content: [{ type: "text", text: `Error: ${JSON.stringify(data, null, 2)}` }] };
+					}
+					return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
+				} catch (error) {
+					const message = error instanceof Error ? error.message : String(error);
+					return { content: [{ type: "text", text: `Error: ${message}` }] };
+				}
+			}
+		);
+
+		// Data API: get_custom_dimensions_and_metrics
+		this.server.tool(
+			"get_custom_dimensions_and_metrics",
+			{ property_id: z.string() },
+			async ({ property_id }) => {
+				try {
+					const credentials = this.getServiceAccountCredentials();
+					const accessToken = await this.getAccessToken(credentials);
+					const url = `https://analyticsdata.googleapis.com/v1beta/properties/${property_id}/metadata`;
+					const response = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}` } });
+					const data: any = await response.json();
+					if (!response.ok) {
+						return { content: [{ type: "text", text: `Error: ${JSON.stringify(data, null, 2)}` }] };
+					}
+
+					// Filter to only custom dimensions/metrics if possible
+					const dimensions = (data as any).dimensions ? (data as any).dimensions.filter((d: any) => d.deprecationStatus !== "DEPRECATED" && (d.category === "CUSTOM" || d.apiName?.startsWith("customEvent: ") || d.apiName?.startsWith("customUser:"))) : [];
+					const metrics = (data as any).metrics ? (data as any).metrics.filter((m: any) => m.deprecationStatus !== "DEPRECATED" && (m.category === "CUSTOM" || m.apiName?.startsWith("customEvent:"))) : [];
+					const filtered = { dimensions, metrics };
+					return { content: [{ type: "text", text: JSON.stringify(filtered, null, 2) }] };
+				} catch (error) {
+					const message = error instanceof Error ? error.message : String(error);
+					return { content: [{ type: "text", text: `Error: ${message}` }] };
 				}
 			}
 		);
